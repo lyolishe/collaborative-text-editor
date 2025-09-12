@@ -1,26 +1,55 @@
+/**
+ * A simplified CRDT (Conflict-free Replicated Data Type) implementation for text editing.
+ * This implementation uses Lamport timestamps and site IDs for conflict resolution.
+ */
 export class CRDTTextEditor {
     constructor(siteId) {
         this.siteId = siteId;
         this.lamportTime = 0;
         this.data = [];
-        this.tombstones = new Map();
+        this.tombstones = new Map(); // Track deleted characters
+        this.idCounter = 0; // Counter for generating unique operation IDs
     }
 
     generateIdBetween(prevId, nextId, depth = 0) {
-        const prevPos = prevId ? prevId[depth] || 0 : 0;
-        const nextPos = nextId ? nextId[depth] || 0 : 0;
-
+        const BASE = 1000000; // Large base for ID generation
+        
+        // Handle edge cases first
+        if (!prevId && !nextId) {
+            return [BASE];
+        }
+        
+        if (!prevId) {
+            const nextPos = nextId[depth] || 0;
+            if (nextPos > 1) {
+                return [...(nextId.slice(0, depth)), Math.floor(nextPos / 2)];
+            } else {
+                return [...(nextId.slice(0, depth)), 0, BASE];
+            }
+        }
+        
+        if (!nextId) {
+            const prevPos = prevId[depth] || 0;
+            return [...(prevId.slice(0, depth)), prevPos + BASE];
+        }
+        
+        // Both IDs exist, generate between them
+        const prevPos = prevId[depth] || 0;
+        const nextPos = nextId[depth] || BASE * 2;
+        
         if (prevPos < nextPos - 1) {
             const newPos = Math.floor((prevPos + nextPos) / 2);
-            return [(prevId || []).slice(0, depth), newPos].flat();
-        } else if (prevPos === undefined && nextPos) {
-            return [nextPos - 1];
-        } else if (prevPos && nextPos === undefined) {
-            return [prevPos + 1];
-        } else if (prevPos === nextPos - 1) {
-            return this.generateIdBetween(prevId, nextId, depth + 1);
+            return [...(prevId.slice(0, depth)), newPos];
         } else {
-            return [1];
+            // Need to go deeper
+            const prevIdExtended = [...prevId];
+            const nextIdExtended = [...nextId];
+            
+            // Extend the shorter ID with zeros
+            while (prevIdExtended.length <= depth) prevIdExtended.push(0);
+            while (nextIdExtended.length <= depth) nextIdExtended.push(BASE * 2);
+            
+            return this.generateIdBetween(prevIdExtended, nextIdExtended, depth + 1);
         }
     }
 
@@ -50,45 +79,59 @@ export class CRDTTextEditor {
         return low;
     }
 
+    /**
+     * Insert a character at the specified index locally.
+     * Creates a new operation that can be sent to other clients.
+     */
     localInsert(index, char) {
         this.lamportTime++;
+        this.idCounter++;
 
-        let prevId = null;
-        let nextId = null;
-
-        if (index > 0) prevId = this.data[index - 1]?.id;
-        if (index < this.data.length) nextId = this.data[index]?.id;
-
-        const newId = this.generateIdBetween(prevId, nextId);
+        // Create a unique ID for this character: [timestamp, siteId, counter]
+        const newId = [this.lamportTime, this.siteId, this.idCounter];
+        
         const newChar = {
             id: newId,
             value: char,
             timestamp: this.lamportTime,
-            siteId: this.siteId
+            siteId: this.siteId,
+            position: index
         };
 
-        const insertIndex = this.findIndexForId(newId);
-        this.data.splice(insertIndex, 0, newChar);
+        // Insert the character at the specified index
+        this.data.splice(index, 0, newChar);
 
+        // Return operation for broadcasting to other clients
         return {
             type: 'insert',
             id: newId,
             value: char,
             timestamp: this.lamportTime,
-            siteId: this.siteId
+            siteId: this.siteId,
+            position: index
         };
     }
 
+    /**
+     * Delete a character at the specified index locally.
+     * Creates a delete operation that can be sent to other clients.
+     */
     localDelete(index) {
-        if (index < 0 || index >= this.data.length) return null;
+        if (index < 0 || index >= this.data.length) {
+            return null;
+        }
 
         const charToDelete = this.data[index];
         this.lamportTime++;
 
+        // Mark character as deleted in tombstones
         const idString = charToDelete.id.join(',');
         this.tombstones.set(idString, true);
+        
+        // Remove character from data array
         this.data.splice(index, 1);
 
+        // Return operation for broadcasting to other clients
         return {
             type: 'delete',
             id: charToDelete.id,
@@ -97,47 +140,79 @@ export class CRDTTextEditor {
         };
     }
 
+    /**
+     * Get the current text content as a string.
+     */
     getText() {
         return this.data.map(char => char.value).join('');
     }
 
+    /**
+     * Apply a remote operation received from another client.
+     * Updates Lamport clock and applies the operation to local state.
+     */
     applyRemoteOperation(operation) {
+        // Update Lamport clock for causality
         this.lamportTime = Math.max(this.lamportTime, operation.timestamp) + 1;
 
         if (operation.type === 'insert') {
-            const idString = operation.id.join(',');
-
-            if (!this.tombstones.has(idString)) {
-                const existingIndex = this.data.findIndex(char =>
-                    char.id.join(',') === idString
-                );
-
-                if (existingIndex === -1) {
-                    const newChar = {
-                        id: operation.id,
-                        value: operation.value,
-                        timestamp: operation.timestamp,
-                        siteId: operation.siteId
-                    };
-
-                    const insertIndex = this.findIndexForId(operation.id);
-                    this.data.splice(insertIndex, 0, newChar);
-                }
-            }
+            this.applyRemoteInsert(operation);
         } else if (operation.type === 'delete') {
-            const idString = operation.id.join(',');
-            this.tombstones.set(idString, true);
+            this.applyRemoteDelete(operation);
+        }
+    }
 
-            const indexToDelete = this.data.findIndex(char =>
+    /**
+     * Apply a remote insert operation.
+     */
+    applyRemoteInsert(operation) {
+        const idString = operation.id.join(',');
+
+        // Don't insert if character was already deleted
+        if (!this.tombstones.has(idString)) {
+            const existingIndex = this.data.findIndex(char =>
                 char.id.join(',') === idString
             );
 
-            if (indexToDelete !== -1) {
-                this.data.splice(indexToDelete, 1);
+            // Only insert if we don't already have this character
+            if (existingIndex === -1) {
+                const newChar = {
+                    id: operation.id,
+                    value: operation.value,
+                    timestamp: operation.timestamp,
+                    siteId: operation.siteId,
+                    position: operation.position || 0
+                };
+
+                // Insert at the intended position (simplified positioning)
+                const insertPos = Math.min(operation.position || 0, this.data.length);
+                this.data.splice(insertPos, 0, newChar);
             }
         }
     }
 
+    /**
+     * Apply a remote delete operation.
+     */
+    applyRemoteDelete(operation) {
+        const idString = operation.id.join(',');
+        
+        // Mark character as deleted
+        this.tombstones.set(idString, true);
+
+        // Find and remove the character if it exists
+        const indexToDelete = this.data.findIndex(char =>
+            char.id.join(',') === idString
+        );
+
+        if (indexToDelete !== -1) {
+            this.data.splice(indexToDelete, 1);
+        }
+    }
+
+    /**
+     * Get the current state for serialization or debugging.
+     */
     getState() {
         return {
             data: this.data,
@@ -146,6 +221,9 @@ export class CRDTTextEditor {
         };
     }
 
+    /**
+     * Apply a complete state (used for synchronization).
+     */
     applyState(state) {
         this.data = state.data;
         this.tombstones = new Map(state.tombstones);
