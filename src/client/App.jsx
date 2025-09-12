@@ -13,7 +13,7 @@ function App() {
     const handleWebSocketMessage = (data) => {
         switch (data.type) {
             case 'operation':
-                if (editorRef.current) {
+                if (editorRef.current && typeof editorRef.current.applyRemoteOperation === 'function') {
                     editorRef.current.applyRemoteOperation(data.operation);
                 }
                 break;
@@ -25,10 +25,11 @@ function App() {
         }
     };
 
+    const isProd = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'production';
+    const wsUrl = isProd ? 'wss://your-vercel-app.vercel.app' : 'ws://localhost:3001';
+
     const { send } = useWebSocket(
-        process.env.NODE_ENV === 'production'
-            ? 'wss://your-vercel-app.vercel.app'
-            : 'ws://localhost:3001',
+        wsUrl,
         handleWebSocketMessage
     );
 
@@ -49,3 +50,5 @@ function App() {
         </div>
     );
 }
+
+export default App;

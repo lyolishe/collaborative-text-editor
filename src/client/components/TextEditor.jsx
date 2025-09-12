@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect, useImperativeHandle } from 'react';
+import React, { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { CRDTTextEditor } from '../utils/CRDTTextEditor';
 
-export const TextEditor = ({ onOperation, initialContent = '' }) => {
+export const TextEditor = forwardRef(({ onOperation, initialContent = '' }, ref) => {
     const [content, setContent] = useState(initialContent);
     const [cursorPosition, setCursorPosition] = useState(0);
     const editorRef = useRef(null);
@@ -18,6 +18,7 @@ export const TextEditor = ({ onOperation, initialContent = '' }) => {
                 const op = crdtRef.current.localInsert(i, initialContent[i]);
                 if (op && onOperation) onOperation(op);
             }
+            setContent(crdtRef.current.getText());
         }
     }, [initialContent, onOperation]);
 
@@ -41,7 +42,8 @@ export const TextEditor = ({ onOperation, initialContent = '' }) => {
 
     const handleSelectionChange = () => {
         if (editorRef.current) {
-            setCursorPosition(editorRef.current.selectionStart);
+            // Note: selectionStart is not standard for contentEditable; this is a placeholder.
+            setCursorPosition(editorRef.current.selectionStart || 0);
         }
     };
 
@@ -51,13 +53,14 @@ export const TextEditor = ({ onOperation, initialContent = '' }) => {
     };
 
     // Экспортируем метод для внешнего использования
-    useImperativeHandle(editorRef, () => ({
+    useImperativeHandle(ref, () => ({
         applyRemoteOperation
     }));
 
     return (
         <div className="text-editor">
             <div
+                ref={editorRef}
                 contentEditable
                 onInput={handleInput}
                 onSelect={handleSelectionChange}
@@ -72,4 +75,4 @@ export const TextEditor = ({ onOperation, initialContent = '' }) => {
             />
         </div>
     );
-};
+});

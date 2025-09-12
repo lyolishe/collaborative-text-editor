@@ -1,0 +1,23 @@
+{
+  "name": "collaborative-text-editor-server",
+  "version": "1.0.0",
+  "description": "WebSocket server for collaborative text editing",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2"
+  },
+  "keywords": [
+    "websocket",
+    "collaborative",
+    "editor",
+    "realtime"
+  ],
+  "author": "",
+  "license": "ISC"
+}
