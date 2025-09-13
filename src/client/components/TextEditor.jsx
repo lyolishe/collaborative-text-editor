@@ -1,19 +1,30 @@
 import React, { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { CRDTTextEditor } from '../utils/CRDTTextEditor';
+import { OfflineQueue } from '../utils/OfflineQueue';
 
-export const TextEditor = forwardRef(({ onOperation, initialContent = '' }, ref) => {
+export const TextEditor = forwardRef(({ onOperation, initialContent = '', offlineQueue = null }, ref) => {
     const [content, setContent] = useState(initialContent);
     const editorRef = useRef(null);
     const crdtRef = useRef(null);
     const isApplyingRemote = useRef(false);
+    const offlineQueueRef = useRef(offlineQueue);
 
     useEffect(() => {
-        // Initialize CRDT with unique site ID
-        const siteId = Math.random().toString(36).substr(2, 9);
-        crdtRef.current = new CRDTTextEditor(siteId);
+        // Initialize or get offline queue
+        if (!offlineQueueRef.current) {
+            offlineQueueRef.current = new OfflineQueue('document-1');
+        }
 
-        // Load initial content if provided
-        if (initialContent) {
+        // Initialize CRDT with unique site ID and offline queue
+        const siteId = Math.random().toString(36).substr(2, 9);
+        crdtRef.current = new CRDTTextEditor(siteId, offlineQueueRef.current);
+
+        // Load existing content from persisted state first
+        const persistedContent = crdtRef.current.getText();
+        if (persistedContent) {
+            setContent(persistedContent);
+        } else if (initialContent) {
+            // Only load initial content if no persisted content exists
             for (let i = 0; i < initialContent.length; i++) {
                 const operation = crdtRef.current.localInsert(i, initialContent[i]);
                 if (operation && onOperation) {
@@ -22,6 +33,9 @@ export const TextEditor = forwardRef(({ onOperation, initialContent = '' }, ref)
             }
             setContent(crdtRef.current.getText());
         }
+
+        // Clean up old operations on mount
+        offlineQueueRef.current.cleanupStale();
     }, [initialContent, onOperation]);
 
     const updateContentAndCursor = (newCursorPos) => {
@@ -103,7 +117,9 @@ export const TextEditor = forwardRef(({ onOperation, initialContent = '' }, ref)
 
     // Expose methods for parent component
     useImperativeHandle(ref, () => ({
-        applyRemoteOperation
+        applyRemoteOperation,
+        getOfflineQueue: () => offlineQueueRef.current,
+        getCRDT: () => crdtRef.current
     }));
 
     return (

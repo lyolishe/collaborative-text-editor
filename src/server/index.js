@@ -36,9 +36,28 @@ wss.on('connection', (ws) => {
                     type: 'operation',
                     operation: data.operation
                 }, ws);
+
+                // Send acknowledgment back to sender (especially important for sync operations)
+                if (data.isSync && data.operation.id) {
+                    ws.send(JSON.stringify({
+                        type: 'operation_ack',
+                        operationId: data.operation.id,
+                        success: true
+                    }));
+                }
             }
         } catch (error) {
             console.error('Error parsing message:', error);
+            
+            // Send error acknowledgment for sync operations
+            if (data.isSync && data.operation && data.operation.id) {
+                ws.send(JSON.stringify({
+                    type: 'operation_ack',
+                    operationId: data.operation.id,
+                    success: false,
+                    error: error.message
+                }));
+            }
         }
     });
 

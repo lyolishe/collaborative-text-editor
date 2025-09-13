@@ -1,14 +1,21 @@
 /**
  * A simplified CRDT (Conflict-free Replicated Data Type) implementation for text editing.
  * This implementation uses Lamport timestamps and site IDs for conflict resolution.
+ * Enhanced with offline-first support and local persistence.
  */
 export class CRDTTextEditor {
-    constructor(siteId) {
+    constructor(siteId, offlineQueue = null) {
         this.siteId = siteId;
         this.lamportTime = 0;
         this.data = [];
         this.tombstones = new Map(); // Track deleted characters
         this.idCounter = 0; // Counter for generating unique operation IDs
+        this.offlineQueue = offlineQueue;
+        this.lastSyncedState = null; // Track last synced state for conflict resolution
+        this.documentId = 'default';
+        
+        // Load persisted state if available
+        this.loadPersistedState();
     }
 
     generateIdBetween(prevId, nextId, depth = 0) {
@@ -101,8 +108,11 @@ export class CRDTTextEditor {
         // Insert the character at the specified index
         this.data.splice(index, 0, newChar);
 
-        // Return operation for broadcasting to other clients
-        return {
+        // Persist state after local change
+        this.persistState();
+
+        // Create operation for broadcasting
+        const operation = {
             type: 'insert',
             id: newId,
             value: char,
@@ -110,6 +120,13 @@ export class CRDTTextEditor {
             siteId: this.siteId,
             position: index
         };
+
+        // Queue operation if offline queue is available
+        if (this.offlineQueue) {
+            return this.offlineQueue.enqueue(operation);
+        }
+
+        return operation;
     }
 
     /**
@@ -131,13 +148,23 @@ export class CRDTTextEditor {
         // Remove character from data array
         this.data.splice(index, 1);
 
-        // Return operation for broadcasting to other clients
-        return {
+        // Persist state after local change
+        this.persistState();
+
+        // Create operation for broadcasting
+        const operation = {
             type: 'delete',
             id: charToDelete.id,
             timestamp: this.lamportTime,
             siteId: this.siteId
         };
+
+        // Queue operation if offline queue is available
+        if (this.offlineQueue) {
+            return this.offlineQueue.enqueue(operation);
+        }
+
+        return operation;
     }
 
     /**
@@ -228,5 +255,66 @@ export class CRDTTextEditor {
         this.data = state.data;
         this.tombstones = new Map(state.tombstones);
         this.lamportTime = Math.max(this.lamportTime, state.lamportTime);
+        this.persistState();
+    }
+
+    /**
+     * Load persisted state from offline queue if available
+     */
+    loadPersistedState() {
+        if (this.offlineQueue) {
+            const persistedState = this.offlineQueue.loadDocumentState();
+            if (persistedState) {
+                this.data = persistedState.data || [];
+                this.tombstones = new Map(persistedState.tombstones || []);
+                this.lamportTime = persistedState.lamportTime || 0;
+                this.idCounter = persistedState.idCounter || 0;
+            }
+        }
+    }
+
+    /**
+     * Persist current state to offline queue
+     */
+    persistState() {
+        if (this.offlineQueue) {
+            const state = {
+                data: this.data,
+                tombstones: Array.from(this.tombstones.entries()),
+                lamportTime: this.lamportTime,
+                idCounter: this.idCounter,
+                siteId: this.siteId
+            };
+            this.offlineQueue.saveDocumentState(state);
+        }
+    }
+
+    /**
+     * Mark the current state as synced with server
+     */
+    markAsSynced() {
+        this.lastSyncedState = {
+            data: [...this.data],
+            tombstones: new Map(this.tombstones),
+            lamportTime: this.lamportTime
+        };
+    }
+
+    /**
+     * Get operations that need to be synchronized
+     * (operations that happened since last sync)
+     */
+    getUnsyncedOperations() {
+        if (!this.offlineQueue) return [];
+        return this.offlineQueue.getAll();
+    }
+
+    /**
+     * Handle operation result from server (for offline sync)
+     */
+    handleOperationAck(operationId, success = true) {
+        if (this.offlineQueue && success) {
+            this.offlineQueue.removeProcessed([operationId]);
+        }
     }
 }
